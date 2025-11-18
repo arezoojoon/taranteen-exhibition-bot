@@ -196,10 +196,9 @@ def get_main_menu_options(lang):
 # --- ROUTES ---
 
 # این بخش اضافه شد تا مشکل 404 حل شود
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {"status": "ok", "message": "Taranteen Grocery Bot is running"}
-
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
