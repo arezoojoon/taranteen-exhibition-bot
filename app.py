@@ -1,4 +1,7 @@
 import os
+import sqlite3 # Standard library for persistence
+import json
+import time # For simulation of scheduling
 from fastapi import FastAPI, Request
 import httpx
 from dotenv import load_dotenv
@@ -9,13 +12,6 @@ load_dotenv()
 app = FastAPI()
 
 # -------------------------------------------------
-# STATE MANAGEMENT
-# ذخیره موقت اطلاعات کاربر در حافظه: {chat_id: {'lang': str, 'name': str, 'phone': str, 'step': str}}
-USER_STATE = {}
-# -------------------------------------------------
-
-
-# -------------------------------------------------
 # CONFIG
 # -------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -23,9 +19,19 @@ if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+DB_NAME = "taranteen_leads.db"
+BOOKING_URL = "https://taranteen.calendly.com/meeting"
 
-# Optional: catalog URLs (پر می‌کنی یا خالی می‌گذاری)
-# این لینک‌ها باید به کاتالوگ‌های واقعی شما اشاره کنند.
+# --- EXHIBITION & CONTACT INFO (UPDATED) ---
+EXHIBITOR_NAME = "Hamidreza Damroodi"
+EXHIBITOR_TITLE_FA = "مدیر عامل" # Updated
+EXHIBITOR_TITLE_AR = "مدير المبيعات" 
+EXHIBITOR_TITLE_RU = "Менеджер по продажам"
+EXHIBITOR_TITLE_EN = "Sales Manager"
+EXHIBITOR_PHONE = "+971564131033" # Updated
+EXHIBITOR_EMAIL = "hr.damroodi@gmail.com" # Updated
+
+# Optional: catalog URLs
 CATALOG_1_URL = os.getenv("CATALOG_1_URL", "https://amhrd.com/wp-content/uploads/2025/11/JARRED-BOTTLED-Products-Catalog-P-4-compressed.pdf")
 CATALOG_2_URL = os.getenv("CATALOG_2_URL", "https://amhrd.com/wp-content/uploads/2025/11/SEASONINGS-SPICES-Product-Catalog-P-8-compressed.pdf")
 CATALOG_3_URL = os.getenv("CATALOG_3_URL", "https://amhrd.com/wp-content/uploads/2025/11/Dry-Goods-Snacks-Products-Catalog-P-1-compressed.pdf")
@@ -35,7 +41,94 @@ CATALOG_6_URL = os.getenv("CATALOG_6_URL", "https://amhrd.com/wp-content/uploads
 
 
 # -------------------------------------------------
-# HELPERS
+# DATABASE & STATE FUNCTIONS (NEW)
+# -------------------------------------------------
+def get_db_connection():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row # Allows accessing columns by name
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS leads (
+            chat_id INTEGER PRIMARY KEY,
+            lang TEXT NOT NULL,
+            name TEXT,
+            phone TEXT,
+            registration_date INTEGER,
+            step TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_lead_state(chat_id, lang, name, phone, step):
+    conn = get_db_connection()
+    timestamp = int(time.time())
+    
+    # Check if lead exists to update or insert
+    cursor = conn.execute("SELECT * FROM leads WHERE chat_id = ?", (chat_id,))
+    existing_lead = cursor.fetchone()
+
+    if existing_lead:
+        conn.execute("""
+            UPDATE leads SET lang=?, name=?, phone=?, step=? WHERE chat_id=?
+        """, (lang, name, phone, step, chat_id))
+    else:
+        conn.execute("""
+            INSERT INTO leads (chat_id, lang, name, phone, registration_date, step) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (chat_id, lang, name, phone, timestamp, step))
+
+    conn.commit()
+    conn.close()
+
+def load_lead_state(chat_id):
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT * FROM leads WHERE chat_id = ?", (chat_id,))
+    lead = cursor.fetchone()
+    conn.close()
+    if lead:
+        # Convert sqlite3.Row object to a dictionary
+        return dict(lead)
+    return {'step': 'awaiting_lang_selection'} # Default starting state
+
+# Call DB initialization when the app starts
+init_db()
+
+# -------------------------------------------------
+# WHATSAPP & SCHEDULING (PLACEHOLDERS)
+# -------------------------------------------------
+def send_whatsapp_message(phone_number: str, message: str):
+    """
+    Placeholder: Sends a message via an external WhatsApp API (e.g., Twilio, Meta API).
+    In a real system, this function would make an HTTP request to the external API.
+    """
+    print(f"--- WHATSAPP ACTION ---")
+    print(f"Sending welcome message to {phone_number}: {message}")
+    print(f"-----------------------")
+    # Real implementation: httpx.post("WHATSAPP_API_URL", data=...)
+
+def schedule_follow_up(chat_id: int, phone_number: str, lang: str):
+    """
+    Placeholder: Schedules a follow-up message to be sent after 3 days.
+    In a real system, this requires a background task queue (e.g., Celery) 
+    or a dedicated cron job to check the database for leads registered 3 days ago.
+    """
+    follow_up_message = {
+        "fa": "سلام. تیم تارانتین پس از ۳ روز برای بررسی سفارش‌های شما در نمایشگاه پیام می‌دهد. مشتاق همکاری با شما هستیم!",
+        "ar": "مرحبًا. يتواصل فريق تارينتين معك بعد 3 أيام لمتابعة طلباتك من المعرض. نتطلع إلى التعاون معك!",
+        "ru": "Здравствуйте. Команда Taranteen свяжется с вами через 3 дня для оформления заказов с выставки. Мы рады сотрудничеству!",
+        "en": "Hello. The Taranteen team is following up 3 days after your visit to the exhibition. We look forward to working with you!"
+    }.get(lang, "Hello! Follow-up message from Taranteen.")
+    
+    print(f"--- SCHEDULING ACTION ---")
+    print(f"Scheduled follow-up for {phone_number} in 3 days. Message: {follow_up_message}")
+    # Real implementation: celery_app.send_task('send_scheduled_whatsapp', args=[phone_number, follow_up_message], countdown=3 * 24 * 60 * 60)
+
+# -------------------------------------------------
+# HELPERS (Same as previous step)
 # -------------------------------------------------
 async def send_message(chat_id: int, text: str, reply_markup: dict | None = None):
     payload = {
@@ -46,12 +139,14 @@ async def send_message(chat_id: int, text: str, reply_markup: dict | None = None
     if reply_markup:
         payload["reply_markup"] = reply_markup
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
+    except Exception as e:
+        print(f"Error sending Telegram message: {e}")
 
 
 def user_greeting(name: str, lang: str) -> str:
-    """Creates a personalized greeting based on language."""
     if lang == "fa":
         return f"سلام {name}، "
     elif lang == "ar":
@@ -69,6 +164,7 @@ def main_menu_keyboard(lang: str):
                 [{"text": "محصولات"}, {"text": "تخفیف‌ها و پیشنهادها"}],
                 [{"text": "کاتالوگ‌ها"}, {"text": "مناطق و زمان تحویل"}],
                 [{"text": "ثبت اطلاعات برای سفارش"}],
+                [{"text": "ارتباط با غرفه‌دار"}, {"text": "رزرو ملاقات"}]
             ],
             "resize_keyboard": True,
             "one_time_keyboard": False,
@@ -79,6 +175,7 @@ def main_menu_keyboard(lang: str):
                 [{"text": "المنتجات"}, {"text": "العروض والخصومات"}],
                 [{"text": "الكتالوجات"}, {"text": "مناطق وأوقات التسليم"}],
                 [{"text": "ترك بياناتي للطلب"}],
+                [{"text": "التواصل مع العارض"}, {"text": "حجز موعد"}]
             ],
             "resize_keyboard": True,
             "one_time_keyboard": False,
@@ -89,6 +186,7 @@ def main_menu_keyboard(lang: str):
                 [{"text": "Товары"}, {"text": "Скидки и предложения"}],
                 [{"text": "Каталоги"}, {"text": "Зоны и время доставки"}],
                 [{"text": "Оставить данные для заказа"}],
+                [{"text": "Связаться со стендистом"}, {"text": "Записаться на встречу"}]
             ],
             "resize_keyboard": True,
             "one_time_keyboard": False,
@@ -99,24 +197,13 @@ def main_menu_keyboard(lang: str):
                 [{"text": "Products"}, {"text": "Offers & Discounts"}],
                 [{"text": "Catalogs"}, {"text": "Delivery Areas & Times"}],
                 [{"text": "Leave my details for order"}],
+                [{"text": "Contact Exhibitor"}, {"text": "Book Appointment"}]
             ],
             "resize_keyboard": True,
             "one_time_keyboard": False,
         }
 
-
-def catalogs_message_en() -> str:
-    return (
-        "Here are Taranteen catalogs:\n\n"
-        f"1) <a href=\"{CATALOG_1_URL}\">Catalog 1: Jars & Bottles</a>\n"
-        f"2) <a href=\"{CATALOG_2_URL}\">Catalog 2: Seasonings & Spices</a>\n"
-        f"3) <a href=\"{CATALOG_3_URL}\">Catalog 3: Dry Goods & Snacks</a>\n"
-        f"4) <a href=\"{CATALOG_4_URL}\">Catalog 4: Frozen Products</a>\n"
-        f"5) <a href=\"{CATALOG_5_URL}\">Catalog 5: Meat Products</a>\n"
-        f"6) <a href=\"{CATALOG_6_URL}\">Catalog 6: Canned Products</a>\n"
-    )
-
-
+# (Catalogs messages functions remain the same for brevity)
 def catalogs_message_fa() -> str:
     return (
         "کاتالوگ‌های فروشگاه مواد غذایی تارانتین:\n\n"
@@ -127,7 +214,6 @@ def catalogs_message_fa() -> str:
         f"۵) <a href=\"{CATALOG_5_URL}\">کاتالوگ ۵: محصولات گوشتی</a>\n"
         f"۶) <a href=\"{CATALOG_6_URL}\">کاتالوگ ۶: کنسرویجات</a>\n"
     )
-
 
 def catalogs_message_ar() -> str:
     return (
@@ -150,7 +236,18 @@ def catalogs_message_ru() -> str:
         f"5) <a href=\"{CATALOG_5_URL}\">Каталог 5: Мясные продукты</a>\n"
         f"6) <a href=\"{CATALOG_6_URL}\">Каталог 6: Консервы</a>\n"
     )
-    
+
+def catalogs_message_en() -> str:
+    return (
+        "Here are Taranteen catalogs:\n\n"
+        f"1) <a href=\"{CATALOG_1_URL}\">Catalog 1: Jars & Bottles</a>\n"
+        f"2) <a href=\"{CATALOG_2_URL}\">Catalog 2: Seasonings & Spices</a>\n"
+        f"3) <a href=\"{CATALOG_3_URL}\">Catalog 3: Dry Goods & Snacks</a>\n"
+        f"4) <a href=\"{CATALOG_4_URL}\">Catalog 4: Frozen Products</a>\n"
+        f"5) <a href=\"{CATALOG_5_URL}\">Catalog 5: Meat Products</a>\n"
+        f"6) <a href=\"{CATALOG_6_URL}\">Catalog 6: Canned Products</a>\n"
+    )
+
 
 # -------------------------------------------------
 # ROUTES
@@ -175,25 +272,27 @@ async def telegram_webhook(request: Request):
     if not chat_id or not text:
         return {"ok": True}
 
-    # Retrieve user state
-    user_state = USER_STATE.get(chat_id, {})
-    lang = user_state.get("lang")
-    name = user_state.get("name", "User") # Default to 'User'
+    # Load state from DB
+    lead_state = load_lead_state(chat_id)
+    lang = lead_state.get("lang")
+    name = lead_state.get("name", "User") 
+    phone = lead_state.get("phone")
+    current_step = lead_state.get('step')
+
 
     # ---------------- /start (Initial prompt for language) ----------------
     if text.startswith("/start"):
         # Reset state and ask for language
-        USER_STATE[chat_id] = {'step': 'awaiting_lang_selection'}
+        save_lead_state(chat_id, '', '', '', 'awaiting_lang_selection')
         
         greeting = (
             "Welcome to <b>Taranteen</b> 🛒\n"
             "Online grocery and food products.\n\n"
             "Choose a language / إختر لغة / زبان را انتخاب کنید / Выберите язык:\n"
         )
-        # Custom keyboard for language selection
         lang_keyboard = {
             "keyboard": [
-                [{"text": "English (EN)"}, {"text": "Русский (RU)"}], # Added RU
+                [{"text": "English (EN)"}, {"text": "Русский (RU)"}],
                 [{"text": "فارسی (FA)"}, {"text": "العربية (AR)"}],
             ],
             "resize_keyboard": True,
@@ -203,71 +302,85 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     # ---------------- State 1: Language Selection ----------------
-    if user_state.get('step') == 'awaiting_lang_selection':
+    if current_step == 'awaiting_lang_selection':
         selected_lang = None
         prompt_msg = ""
         
         if "EN" in text.upper():
             selected_lang = "en"
-            prompt_msg = "Please send your full name and WhatsApp number in one message (e.g., John Doe, +971501234567):"
+            prompt_msg = "Thank you. Please send your full name:"
         elif "FA" in text.upper() or "فارسی" in text:
             selected_lang = "fa"
-            prompt_msg = "لطفاً نام کامل و شماره واتساپ خود را در یک پیام بفرستید (مثال: سارا محمدی، ۰۵۰۱۲۳۴۵۶۷):"
+            prompt_msg = "ممنون. لطفاً نام کامل خود را بفرستید:"
         elif "AR" in text.upper() or "العربية" in text:
             selected_lang = "ar"
-            prompt_msg = "الرجاء إرسال اسمك الكامل ورقم واتساب في رسالة واحدة (مثال: علي خالد، ٠٥٠١٢٣٤٥٦٧):"
+            prompt_msg = "شكراً. الرجاء إرسال اسمك الكامل:"
         elif "RU" in text.upper() or "РУССКИЙ" in text or "RUSSIAN" in text.upper():
             selected_lang = "ru"
-            prompt_msg = "Пожалуйста, отправьте свое полное имя и номер WhatsApp в одном сообщении (например: Иван Петров, +971501234567):"
+            prompt_msg = "Спасибо. Пожалуйста, отправьте свое полное имя:"
         
         if selected_lang:
-            USER_STATE[chat_id]['lang'] = selected_lang
-            USER_STATE[chat_id]['step'] = 'awaiting_details'
+            save_lead_state(chat_id, selected_lang, '', '', 'awaiting_name') # Save lang, next step: awaiting_name
             await send_message(chat_id, prompt_msg)
             return {"ok": True}
         else:
             await send_message(chat_id, "Invalid selection. Please choose a language from the options.")
             return {"ok": True}
 
-    # ---------------- State 2: Awaiting Details (Name/Phone) ----------------
-    if user_state.get('step') == 'awaiting_details':
-        # Simple parsing: assume the whole message is the details.
-        parts = [p.strip() for p in text.split(",", 1)]
+    # ---------------- State 2: Awaiting Name ----------------
+    if current_step == 'awaiting_name':
+        # Save name and move to phone prompt
+        name_input = text
+        save_lead_state(chat_id, lang, name_input, '', 'awaiting_phone')
         
-        if not parts[0]:
-            prompt = (
-                "Please provide your name and WhatsApp number."
-                if lang == "en" else
-                "لطفاً نام و شماره واتساپ خود را وارد کنید."
-                if lang == "fa" else
-                "الرجاء إدخال الاسم ورقم واتساب."
-                if lang == "ar" else
-                "Пожалуйста, укажите ваше имя и номер WhatsApp."
-            )
-            await send_message(chat_id, prompt)
-            return {"ok": True}
-
-        # The user's name is the first part, phone is the second (optional)
-        name_input = parts[0]
-        phone_input = parts[1] if len(parts) > 1 else "Not provided"
-
-        # Save details and move to main menu
-        USER_STATE[chat_id]['name'] = name_input
-        USER_STATE[chat_id]['phone'] = phone_input
-        USER_STATE[chat_id]['step'] = 'main_menu' 
-        
-        welcome_msg = (
-            f"Thank you, {name_input} 👋. Welcome to Taranteen online grocery.\n"
-            "Please choose an option below:"
+        prompt = (
+            f"Thank you, {name_input}. Now, please send your WhatsApp number (e.g., +971501234567):"
             if lang == "en" else
-            f"ممنون، {name_input} 👋. به چت‌بات فروشگاه مواد غذایی تارانتین خوش آمدید.\n"
-            "از منوی زیر یکی از گزینه‌ها را انتخاب کنید:"
+            f"ممنون، {name_input}. اکنون، لطفاً شماره واتساپ خود را بفرستید (مثال: ۰۵۰۱۲۳۴۵۶۷):"
             if lang == "fa" else
-            f"شكراً لك، {name_input} 👋. مرحباً بك في بقالة تارينتين عبر الإنترنت.\n"
-            "الرجاء اختيار خيار أدناه:"
+            f"شكراً لك، {name_input}. الآن، الرجاء إرسال رقم واتساب الخاص بك (مثال: ٠٥٠١٢٣٤٥٦٧):"
             if lang == "ar" else
-            f"Спасибо, {name_input} 👋. Добро пожаловать в онлайн-магазин Taranteen.\n"
-            "Пожалуйста, выберите один из вариантов ниже:"
+            f"Спасибо, {name_input}. Теперь, пожалуйста, отправьте свой номер WhatsApp (например: +971501234567):"
+        )
+        
+        await send_message(chat_id, prompt)
+        return {"ok": True}
+
+    # ---------------- State 3: Awaiting Phone ----------------
+    if current_step == 'awaiting_phone':
+        # Save phone, set final step, and greet user
+        phone_input = text
+        
+        # We need to reload the state to get the name saved in the previous step
+        lead_state = load_lead_state(chat_id)
+        current_name = lead_state.get('name', 'User')
+
+        save_lead_state(chat_id, lang, current_name, phone_input, 'main_menu') 
+        
+        # --- NEW WHATSAPP ACTIONS ---
+        welcome_whatsapp_message = {
+            "fa": f"سلام {current_name} عزیز. از ثبت اطلاعاتتان در غرفه تارانتین ممنونیم. کاتالوگ‌های ما را می‌توانید از طریق لینک‌های زیر مشاهده کنید.",
+            "ar": f"مرحباً {current_name}. شكراً لتسجيل بياناتك في جناح تارينتين. يمكنك الاطلاع على كتالوجاتنا عبر الروابط التالية.",
+            "ru": f"Здравствуйте, {current_name}. Спасибо за регистрацию на стенде Taranteen. Наши каталоги доступны по ссылкам ниже.",
+            "en": f"Hello {current_name}. Thank you for registering your details at the Taranteen booth. You can view our catalogs via the links below."
+        }.get(lang, f"Hello {current_name}. Welcome to Taranteen.")
+        
+        send_whatsapp_message(phone_input, welcome_whatsapp_message)
+        schedule_follow_up(chat_id, phone_input, lang)
+        # ----------------------------
+
+        welcome_msg = (
+            f"Thank you, {current_name} 👋. Welcome to Taranteen online grocery.\n"
+            "Your details have been saved for follow-up. A **welcome message has been sent to your WhatsApp**. Please choose an option below:"
+            if lang == "en" else
+            f"ممنون، {current_name} 👋. به چت‌بات فروشگاه مواد غذایی تارانتین خوش آمدید.\n"
+            "اطلاعات شما برای پیگیری ذخیره شد. **پیام خوش‌آمدگویی به واتساپ شما ارسال شد**. از منوی زیر یکی از گزینه‌ها را انتخاب کنید:"
+            if lang == "fa" else
+            f"شكراً لك، {current_name} 👋. مرحباً بك في بقالة تارينتين عبر الإنترنت.\n"
+            "تم حفظ بياناتك للمتابعة. **تم إرسال رسالة ترحيب إلى واتساب الخاص بك**. الرجاء اختيار خيار أدناه:"
+            if lang == "ar" else
+            f"Спасибо, {current_name} 👋. Добро пожаловать в онлайн-магазин Taranteen.\n"
+            "Ваши данные сохранены для обратной связи. **Приветственное сообщение было отправлено вам в WhatsApp**. Пожалуйста, выберите один из вариантов ниже:"
         )
 
         await send_message(chat_id, welcome_msg, reply_markup=main_menu_keyboard(lang))
@@ -275,13 +388,46 @@ async def telegram_webhook(request: Request):
 
 
     # If not in one of the initial states, proceed with main menu logic
-    if lang is None:
-        # If the user somehow skipped the flow, ask them to start over
-        await send_message(chat_id, "Please type /start to begin the conversation.")
+    if current_step != 'main_menu':
+        # If the user is mid-flow but sends arbitrary text, ask them to continue the flow
+        prompt = {
+            "fa": "لطفاً ابتدا روند ثبت اطلاعات (نام و شماره) را تکمیل کنید.",
+            "ar": "الرجاء إكمال عملية تسجيل البيانات (الاسم والرقم) أولاً.",
+            "ru": "Пожалуйста, сначала завершите процесс регистрации (имя и номер).",
+            "en": "Please complete the registration process (name and number) first."
+        }.get(lang or 'en')
+        await send_message(chat_id, prompt)
         return {"ok": True}
 
-    # ---------------- FA FLOWS (Main Menu) ----------------
+    # --- MAIN MENU FLOWS (FA, AR, RU, EN) ---
+    
+    # Flow logic uses the loaded `lang`, `name`, and `phone` variables
+    
+    # --- FA FLOWS ---
     if lang == "fa":
+        if text == "ارتباط با غرفه‌دار":
+            msg = (
+                f"{user_greeting(name, 'fa')}"
+                "برای ارتباط مستقیم با **مدیر عامل** ما:\n"
+                f"• نام: {EXHIBITOR_NAME} ({EXHIBITOR_TITLE_FA})\n"
+                f"• واتساپ: <a href='https://wa.me/{EXHIBITOR_PHONE}'>{EXHIBITOR_PHONE}</a>\n"
+                f"• ایمیل: {EXHIBITOR_EMAIL}\n"
+                "می‌توانید همین حالا با ایشان تماس بگیرید."
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("fa"))
+            return {"ok": True}
+        
+        if text == "رزرو ملاقات":
+            msg = (
+                f"{user_greeting(name, 'fa')}"
+                "برای رزرو وقت ملاقات خصوصی با مدیران ما در غرفه:\n"
+                f"لطفاً از طریق این لینک، زمان مورد نظر خود را در تقویم ما انتخاب کنید:\n"
+                f"🗓️ <a href='{BOOKING_URL}'>رزرو وقت ملاقات تارانتین</a>\n"
+                "ما منتظر دیدار شما هستیم!"
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("fa"))
+            return {"ok": True}
+            
         if text == "محصولات":
             msg = (
                 f"{user_greeting(name, 'fa')}"
@@ -321,10 +467,10 @@ async def telegram_webhook(request: Request):
                 f"{user_greeting(name, 'fa')}"
                 "برای اینکه تیم تارانتین بتواند سفارش یا درخواست همکاری شما را پیگیری کند، "
                 "لطفاً اطلاعات زیر را در یک پیام **دیگر** ارسال کنید تا به تیم فروش منتقل شود:\n\n"
-                "۱. نام کامل (که قبلاً ثبت کردید)\n"
-                "۲. نوع مشتری (خانواده / رستوران / سوپرمارکت و ...)\n"
-                "۳. لیست اقلام درخواستی یا سؤالات شما\n"
-                "۴. ایمیل یا شماره واتساپ (که قبلاً ثبت کردید)"
+                f"۱. نام کامل: **{name}**\n"
+                f"۲. شماره واتساپ: **{phone}**\n"
+                "۳. نوع مشتری (خانواده / رستوران / سوپرمارکت و ...)\n"
+                "۴. لیست اقلام درخواستی یا سؤالات شما"
             )
             await send_message(chat_id, msg, reply_markup=main_menu_keyboard("fa"))
             return {"ok": True}
@@ -339,9 +485,31 @@ async def telegram_webhook(request: Request):
         await send_message(chat_id, msg, reply_markup=main_menu_keyboard("fa"))
         return {"ok": True}
 
-
-    # ---------------- AR FLOWS (Main Menu) ----------------
+    # --- AR FLOWS ---
     elif lang == "ar":
+        if text == "التواصل مع العارض":
+            msg = (
+                f"{user_greeting(name, 'ar')}"
+                "للتواصل مباشرة مع مدير المبيعات لدينا:\n"
+                f"• الاسم: {EXHIBITOR_NAME} ({EXHIBITOR_TITLE_AR})\n"
+                f"• واتساب: <a href='https://wa.me/{EXHIBITOR_PHONE}'>{EXHIBITOR_PHONE}</a>\n"
+                f"• البريد الإلكتروني: {EXHIBITOR_EMAIL}\n"
+                "يمكنك الاتصال به الآن."
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ar"))
+            return {"ok": True}
+        
+        if text == "حجز موعد":
+            msg = (
+                f"{user_greeting(name, 'ar')}"
+                "لحجز موعد خاص مع مديرينا في الجناح:\n"
+                f"الرجاء اختيار الوقت المناسب لك في تقويمنا عبر هذا الرابط:\n"
+                f"🗓️ <a href='{BOOKING_URL}'>حجز موعد تارينتين</a>\n"
+                "نحن نتطلع إلى رؤيتك!"
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ar"))
+            return {"ok": True}
+            
         if text == "المنتجات":
             msg = (
                 f"{user_greeting(name, 'ar')}"
@@ -381,10 +549,10 @@ async def telegram_webhook(request: Request):
                 f"{user_greeting(name, 'ar')}"
                 "حتى يتمكن فريق تارينتين من متابعة طلبك أو طلب الشراكة، "
                 "الرجاء إرسال المعلومات التالية في رسالة **أخرى** ليتم توجيهها إلى فريق المبيعات:\n\n"
-                "1) الاسم الكامل (تم تسجيله مسبقاً)\n"
-                "2) نوع العميل (عائلة / مطعم / سوبر ماركت / غير ذلك)\n"
-                "3) قائمة الأصناف المطلوبة أو استفساراتك\n"
-                "4) البريد الإلكتروني أو رقم واتساب (تم تسجيله مسبقاً)"
+                f"1) الاسم الكامل: **{name}**\n"
+                f"2) رقم واتساب: **{phone}**\n"
+                "3) نوع العميل (عائلة / مطعم / سوبر ماركت / غير ذلك)\n"
+                "4) قائمة الأصناف المطلوبة أو استفساراتك"
             )
             await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ar"))
             return {"ok": True}
@@ -398,9 +566,32 @@ async def telegram_webhook(request: Request):
         )
         await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ar"))
         return {"ok": True}
-    
-    # ---------------- RU FLOWS (Main Menu - NEW) ----------------
+
+    # --- RU FLOWS ---
     elif lang == "ru":
+        if text == "Связаться со стендистом":
+            msg = (
+                f"{user_greeting(name, 'ru')}"
+                "Для прямого контакта с нашим менеджером по продажам:\n"
+                f"• Имя: {EXHIBITOR_NAME} ({EXHIBITOR_TITLE_RU})\n"
+                f"• WhatsApp: <a href='https://wa.me/{EXHIBITOR_PHONE}'>{EXHIBITOR_PHONE}</a>\n"
+                f"• Email: {EXHIBITOR_EMAIL}\n"
+                "Вы можете связаться с ним прямо сейчас."
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ru"))
+            return {"ok": True}
+
+        if text == "Записаться на встречу":
+            msg = (
+                f"{user_greeting(name, 'ru')}"
+                "Чтобы забронировать частную встречу с нашими менеджерами на стенде:\n"
+                f"Пожалуйста, выберите удобное для вас время в нашем календаре по этой ссылке:\n"
+                f"🗓️ <a href='{BOOKING_URL}'>Запись на встречу Taranteen</a>\n"
+                "Мы с нетерпением ждем встречи с вами!"
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ru"))
+            return {"ok": True}
+
         if text == "Товары":
             msg = (
                 f"{user_greeting(name, 'ru')}"
@@ -440,10 +631,10 @@ async def telegram_webhook(request: Request):
                 f"{user_greeting(name, 'ru')}"
                 "Чтобы команда Taranteen могла обработать ваш заказ или запрос на партнерство, "
                 "пожалуйста, отправьте следующую информацию **отдельным** сообщением, чтобы она была перенаправлена в отдел продаж:\n\n"
-                "1) Ваше полное имя (уже зарегистрировано)\n"
-                "2) Тип клиента (семья / ресторан / супермаркет / другое)\n"
-                "3) Список запрашиваемых товаров или ваши вопросы\n"
-                "4) Электронная почта или номер WhatsApp (уже зарегистрированы)"
+                f"1) Ваше полное имя: **{name}**\n"
+                f"2) Номер WhatsApp: **{phone}**\n"
+                "3) Тип клиента (семья / ресторан / супермаркет / другое)\n"
+                "4) Список запрашиваемых товаров или ваши вопросы"
             )
             await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ru"))
             return {"ok": True}
@@ -458,8 +649,31 @@ async def telegram_webhook(request: Request):
         await send_message(chat_id, msg, reply_markup=main_menu_keyboard("ru"))
         return {"ok": True}
 
-    # ---------------- EN FLOWS (Main Menu) ----------------
+    # --- EN FLOWS ---
     elif lang == "en":
+        if text == "Contact Exhibitor":
+            msg = (
+                f"{user_greeting(name, 'en')}"
+                "To contact our Sales Manager directly:\n"
+                f"• Name: {EXHIBITOR_NAME} ({EXHIBITOR_TITLE_EN})\n"
+                f"• WhatsApp: <a href='https://wa.me/{EXHIBITOR_PHONE}'>{EXHIBITOR_PHONE}</a>\n"
+                f"• Email: {EXHIBITOR_EMAIL}\n"
+                "Feel free to reach out now."
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("en"))
+            return {"ok": True}
+
+        if text == "Book Appointment":
+            msg = (
+                f"{user_greeting(name, 'en')}"
+                "To book a private appointment with our managers at the booth:\n"
+                f"Please choose your preferred time in our calendar via this link:\n"
+                f"🗓️ <a href='{BOOKING_URL}'>Taranteen Appointment Booking</a>\n"
+                "We look forward to seeing you!"
+            )
+            await send_message(chat_id, msg, reply_markup=main_menu_keyboard("en"))
+            return {"ok": True}
+
         if text == "Products":
             msg = (
                 f"{user_greeting(name, 'en')}"
@@ -499,10 +713,10 @@ async def telegram_webhook(request: Request):
                 f"{user_greeting(name, 'en')}"
                 "For the Taranteen team to follow up on your order or partnership inquiry, "
                 "please send the following information in **another** message to be forwarded to the sales team:\n\n"
-                "1) Your full name (already registered)\n"
-                "2) Customer type (family / restaurant / supermarket / other)\n"
-                "3) List of requested items or your questions\n"
-                "4) Email or WhatsApp number (already registered)"
+                f"1) Your full name: **{name}**\n"
+                f"2) WhatsApp number: **{phone}**\n"
+                "3) Customer type (family / restaurant / supermarket / other)\n"
+                "4) List of requested items or your questions"
             )
             await send_message(chat_id, msg, reply_markup=main_menu_keyboard("en"))
             return {"ok": True}
