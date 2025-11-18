@@ -59,7 +59,6 @@ def save_lead_state(chat_id, lang, name, phone, step):
     timestamp = int(time.time())
     cursor = conn.execute("SELECT * FROM leads WHERE chat_id = ?", (str(chat_id),))
     if cursor.fetchone():
-        # فقط فیلدهای جدید را آپدیت کن، اگر خالی بودند مقدار قبلی را نگه‌دار
         conn.execute("""
             UPDATE leads 
             SET lang=COALESCE(?, lang), name=COALESCE(?, name), phone=COALESCE(?, phone), step=? 
@@ -87,7 +86,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
     step = state.get('step')
     lang = state.get('lang')
 
-    # ریست کردن با دستور start
+    # دستور شروع
     if text in ["/start", "start", "شروع"]:
         save_lead_state(chat_id, '', '', '', 'awaiting_lang_selection')
         await responder_func(
@@ -96,7 +95,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
         )
         return
 
-    # مرحله ۱: انتخاب زبان
+    # انتخاب زبان
     if step == 'awaiting_lang_selection':
         sel_lang = None
         if "EN" in text.upper(): sel_lang = "en"
@@ -117,7 +116,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
             await responder_func("Please select a language:", options=["English (EN)", "فارسی (FA)"])
         return
 
-    # مرحله ۲: دریافت نام
+    # دریافت نام
     if step == 'awaiting_name':
         save_lead_state(chat_id, lang, text, '', 'awaiting_phone')
         prompt = {
@@ -129,7 +128,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
         await responder_func(prompt)
         return
 
-    # مرحله ۳: دریافت شماره و نمایش منو
+    # دریافت شماره
     if step == 'awaiting_phone':
         save_lead_state(chat_id, lang, state.get('name'), text, 'main_menu')
         welcome = {
@@ -141,10 +140,8 @@ async def process_user_input(chat_id: str, text: str, responder_func):
         await responder_func(welcome, options=get_main_menu_options(lang))
         return
 
-    # مرحله ۴: منوی اصلی (پاسخ‌های چند زبانه)
+    # منوی اصلی
     if step == 'main_menu':
-        
-        # گزینه ۱: کاتالوگ‌ها
         if any(x in text for x in ["Catalogs", "کاتالوگ", "الكتالوجات", "Каталоги"]):
             msg = {
                 "en": f"Here is our catalog: <a href='{CATALOG_URL}'>Download PDF</a>",
@@ -154,26 +151,21 @@ async def process_user_input(chat_id: str, text: str, responder_func):
             }.get(lang, f"Link: {CATALOG_URL}")
             await responder_func(msg, options=get_main_menu_options(lang))
         
-        # گزینه ۲: تماس / ارتباط
         elif any(x in text for x in ["Contact", "ارتباط", "التواصل", "Связаться"]):
             titles = {
                 "en": "Sales Manager", "fa": "مدیر عامل", 
                 "ar": "مدير المبيعات", "ru": "Менеджер по продажам"
             }
             t = titles.get(lang, "Manager")
-            
             info = f"👤 {EXHIBITOR_NAME} ({t})\n📞 {EXHIBITOR_PHONE}\n📧 {EXHIBITOR_EMAIL}"
-            
             intro = {
                 "en": "You can contact our manager directly:",
                 "fa": "اطلاعات تماس مستقیم با مدیریت:",
                 "ar": "يمكنك التواصل مع المدير مباشرة:",
                 "ru": "Вы можете связаться с менеджером напрямую:"
             }.get(lang, "")
-            
             await responder_func(f"{intro}\n\n{info}", options=get_main_menu_options(lang))
 
-        # گزینه ۳: رزرو (Book)
         elif any(x in text for x in ["Book", "رزرو", "حجز", "Записаться"]):
             msg = {
                 "en": f"Book a meeting here: <a href='{BOOKING_URL}'>Calendly</a>",
@@ -202,6 +194,12 @@ def get_main_menu_options(lang):
     return ["Products / Catalogs", "Contact Exhibitor", "Book Appointment"]
 
 # --- ROUTES ---
+
+# این بخش اضافه شد تا مشکل 404 حل شود
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Taranteen Grocery Bot is running"}
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
