@@ -31,7 +31,14 @@ BOOKING_URL = "https://taranteen.calendly.com/meeting"
 EXHIBITOR_NAME = "Hamidreza Damroodi"
 EXHIBITOR_PHONE = "+971564131033"
 EXHIBITOR_EMAIL = "hr.damroodi@gmail.com"
-CATALOG_URL = os.getenv("CATALOG_URL", "https://amhrd.com/catalog.pdf")
+
+# بازگرداندن لینک‌های ۶ کاتالوگ
+CATALOG_1_URL = os.getenv("CATALOG_1_URL", "https://amhrd.com/wp-content/uploads/2025/11/JARRED-BOTTLED-Products-Catalog-P-4-compressed.pdf")
+CATALOG_2_URL = os.getenv("CATALOG_2_URL", "https://amhrd.com/wp-content/uploads/2025/11/SEASONINGS-SPICES-Product-Catalog-P-8-compressed.pdf")
+CATALOG_3_URL = os.getenv("CATALOG_3_URL", "https://amhrd.com/wp-content/uploads/2025/11/Dry-Goods-Snacks-Products-Catalog-P-1-compressed.pdf")
+CATALOG_4_URL = os.getenv("CATALOG_4_URL", "https://amhrd.com/wp-content/uploads/2025/11/FROZEN-Products-Catalog-P-1-compressed.pdf")
+CATALOG_5_URL = os.getenv("CATALOG_5_URL", "https://amhrd.com/wp-content/uploads/2025/11/MEAT-Products-Catalog-P-1-compressed.pdf")
+CATALOG_6_URL = os.getenv("CATALOG_6_URL", "https://amhrd.com/wp-content/uploads/2025/11/CANNED-Products-Catalog-P-3-compressed.pdf")
 
 # --- DATABASE ---
 def get_db_connection():
@@ -80,13 +87,42 @@ def load_lead_state(chat_id):
 
 init_db()
 
+# --- HELPERS ---
+def get_catalogs_message(lang):
+    # عنوان‌ها بر اساس زبان
+    titles = {
+        "en": ["Jars & Bottles", "Seasonings & Spices", "Dry Goods & Snacks", "Frozen Products", "Meat Products", "Canned Products"],
+        "fa": ["محصولات شیشه‌ای", "ادویه و چاشنی", "خشکبار و تنقلات", "محصولات منجمد", "محصولات گوشتی", "کنسرویجات"],
+        "ar": ["الجرار والزجاجات", "التوابل والبهارات", "السلع الجافة", "المنتجات المجمدة", "منتجات اللحوم", "المعلبات"],
+        "ru": ["Банки и бутылки", "Приправы и специи", "Сухие товары", "Замороженные продукты", "Мясные продукты", "Консервы"]
+    }
+    t = titles.get(lang, titles["en"])
+    
+    # ساخت لیست لینک‌ها
+    msg = ""
+    msg += f"1) <a href='{CATALOG_1_URL}'>{t[0]}</a>\n"
+    msg += f"2) <a href='{CATALOG_2_URL}'>{t[1]}</a>\n"
+    msg += f"3) <a href='{CATALOG_3_URL}'>{t[2]}</a>\n"
+    msg += f"4) <a href='{CATALOG_4_URL}'>{t[3]}</a>\n"
+    msg += f"5) <a href='{CATALOG_5_URL}'>{t[4]}</a>\n"
+    msg += f"6) <a href='{CATALOG_6_URL}'>{t[5]}</a>"
+    
+    intro = {
+        "en": "Here are our catalogs:",
+        "fa": "لیست کاتالوگ‌های ما:",
+        "ar": "قائمة الكتالوجات:",
+        "ru": "Наши каталоги:"
+    }.get(lang, "Catalogs:")
+    
+    return f"{intro}\n\n{msg}"
+
 # --- LOGIC ---
 async def process_user_input(chat_id: str, text: str, responder_func):
     state = load_lead_state(chat_id)
     step = state.get('step')
     lang = state.get('lang')
 
-    # دستور شروع
+    # ریست کردن
     if text in ["/start", "start", "شروع"]:
         save_lead_state(chat_id, '', '', '', 'awaiting_lang_selection')
         await responder_func(
@@ -95,7 +131,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
         )
         return
 
-    # انتخاب زبان
+    # مرحله ۱: زبان
     if step == 'awaiting_lang_selection':
         sel_lang = None
         if "EN" in text.upper(): sel_lang = "en"
@@ -116,7 +152,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
             await responder_func("Please select a language:", options=["English (EN)", "فارسی (FA)"])
         return
 
-    # دریافت نام
+    # مرحله ۲: نام
     if step == 'awaiting_name':
         save_lead_state(chat_id, lang, text, '', 'awaiting_phone')
         prompt = {
@@ -128,7 +164,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
         await responder_func(prompt)
         return
 
-    # دریافت شماره
+    # مرحله ۳: شماره و اتمام
     if step == 'awaiting_phone':
         save_lead_state(chat_id, lang, state.get('name'), text, 'main_menu')
         welcome = {
@@ -140,22 +176,16 @@ async def process_user_input(chat_id: str, text: str, responder_func):
         await responder_func(welcome, options=get_main_menu_options(lang))
         return
 
-    # منوی اصلی
+    # مرحله ۴: منوی اصلی
     if step == 'main_menu':
+        # گزینه ۱: کاتالوگ‌ها
         if any(x in text for x in ["Catalogs", "کاتالوگ", "الكتالوجات", "Каталоги"]):
-            msg = {
-                "en": f"Here is our catalog: <a href='{CATALOG_URL}'>Download PDF</a>",
-                "fa": f"این کاتالوگ محصولات ماست: <a href='{CATALOG_URL}'>دانلود PDF</a>",
-                "ar": f"إليك الكتالوج الخاص بنا: <a href='{CATALOG_URL}'>تحميل PDF</a>",
-                "ru": f"Вот наш каталог: <a href='{CATALOG_URL}'>Скачать PDF</a>"
-            }.get(lang, f"Link: {CATALOG_URL}")
+            msg = get_catalogs_message(lang)
             await responder_func(msg, options=get_main_menu_options(lang))
         
+        # گزینه ۲: تماس
         elif any(x in text for x in ["Contact", "ارتباط", "التواصل", "Связаться"]):
-            titles = {
-                "en": "Sales Manager", "fa": "مدیر عامل", 
-                "ar": "مدير المبيعات", "ru": "Менеджер по продажам"
-            }
+            titles = {"en": "Sales Manager", "fa": "مدیر عامل", "ar": "مدير المبيعات", "ru": "Менеджер по продажам"}
             t = titles.get(lang, "Manager")
             info = f"👤 {EXHIBITOR_NAME} ({t})\n📞 {EXHIBITOR_PHONE}\n📧 {EXHIBITOR_EMAIL}"
             intro = {
@@ -166,6 +196,7 @@ async def process_user_input(chat_id: str, text: str, responder_func):
             }.get(lang, "")
             await responder_func(f"{intro}\n\n{info}", options=get_main_menu_options(lang))
 
+        # گزینه ۳: رزرو
         elif any(x in text for x in ["Book", "رزرو", "حجز", "Записаться"]):
             msg = {
                 "en": f"Book a meeting here: <a href='{BOOKING_URL}'>Calendly</a>",
@@ -188,17 +219,16 @@ async def process_user_input(chat_id: str, text: str, responder_func):
     await responder_func("Type /start to restart.")
 
 def get_main_menu_options(lang):
-    if lang == 'fa': return ["محصولات / کاتالوگ", "ارتباط با غرفه‌دار", "رزرو ملاقات"]
-    if lang == 'ar': return ["المنتجات / الكتالوجات", "التواصل مع العارض", "حجز موعد"]
-    if lang == 'ru': return ["Товары / Каталоги", "Связаться", "Записаться"]
-    return ["Products / Catalogs", "Contact Exhibitor", "Book Appointment"]
+    if lang == 'fa': return ["کاتالوگ‌ها", "ارتباط با غرفه‌دار", "رزرو ملاقات"]
+    if lang == 'ar': return ["الكتالوجات", "التواصل مع العارض", "حجز موعد"]
+    if lang == 'ru': return ["Каталоги", "Связаться", "Записаться"]
+    return ["Catalogs", "Contact Exhibitor", "Book Appointment"]
 
 # --- ROUTES ---
-
-# این بخش اضافه شد تا مشکل 404 حل شود
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.get("/")
 async def root():
     return {"status": "ok", "message": "Taranteen Grocery Bot is running"}
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
@@ -206,14 +236,12 @@ async def telegram_webhook(request: Request):
     chat_id = msg.get("chat", {}).get("id")
     text = msg.get("text", "")
     if not chat_id: return {"ok": True}
-
     async def telegram_responder(resp_text, options=None):
         payload = {"chat_id": chat_id, "text": resp_text, "parse_mode": "HTML"}
         if options:
             payload["reply_markup"] = {"keyboard": [[{"text": o}] for o in options], "resize_keyboard": True}
         async with httpx.AsyncClient() as client:
             await client.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
-
     await process_user_input(str(chat_id), text, telegram_responder)
     return {"ok": True}
 
@@ -226,6 +254,5 @@ async def web_chat(body: WebMessage):
     responses = []
     async def web_responder(resp_text, options=None):
         responses.append({"text": resp_text, "options": options or []})
-    
     await process_user_input(body.session_id, body.message, web_responder)
     return {"messages": responses}
